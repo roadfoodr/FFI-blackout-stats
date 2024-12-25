@@ -2,6 +2,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+import pandas as pd
 from utils import load_data
 import os
 
@@ -26,12 +27,39 @@ if os.path.exists(logo_path):
     )
     
 # Title
-st.title("Fantasy Index Blackout -- Usage Stats")
+st.title("Fantasy Index Blackout -- 2004 Usage Stats")
 
 # Load data
 @st.cache_data
 def get_data():
-    return load_data()
+    weekly_df = load_data()
+    
+    # Create aggregated dataframe
+    agg_df = weekly_df.groupby(['Name', 'Position']).agg({
+        'Week': 'nunique',  # Count unique weeks
+        'Team': lambda x: x.iloc[-1],  # Get latest team
+        'Score': 'sum',  # Sum of scores
+        'Count': 'sum',  # Sum of counts
+        'Entries': 'sum'  # Sum of entries
+    }).reset_index()
+    
+    # Calculate average score per week
+    agg_df['Score'] = agg_df['Score'] / agg_df['Week']
+    
+    # Calculate overall Start_Pct
+    agg_df['Start_Pct'] = (agg_df['Count'] / agg_df['Entries']) * 100
+    
+    # Set Week to "All"
+    agg_df['Week'] = 'All'
+    
+    # Round numeric columns
+    agg_df['Score'] = agg_df['Score'].round(1)
+    agg_df['Start_Pct'] = agg_df['Start_Pct'].round(1)
+    
+    # Combine weekly and aggregated data
+    combined_df = pd.concat([weekly_df, agg_df[weekly_df.columns]], ignore_index=True)
+    
+    return combined_df
 
 try:
     df = get_data()
@@ -53,14 +81,14 @@ try:
     with col1:
         # Position filter with custom order
         available_positions = sorted(df["Position"].unique(), key=lambda x: POSITION_ORDER.index(x))
-        positions = ["All"] + available_positions
+        positions = ["All"] + [p for p in available_positions if p != "All"]
         selected_position = st.selectbox("Select Position", positions)
     
     with col2:
-        # Week filter with latest week as default
-        weeks = ["All"] + sorted(df["Week"].unique().tolist())
-        default_week = max(df["Week"].unique()) if len(df["Week"].unique()) > 0 else "All"
-        selected_week = st.selectbox("Select Week", weeks, index=weeks.index(default_week))
+        # Week filter with "All" first, then numeric weeks
+        numeric_weeks = sorted(w for w in df["Week"].unique() if w != "All")
+        weeks = ["All"] + numeric_weeks
+        selected_week = st.selectbox("Select Week", weeks, index=0)  # index=0 selects "All"
     
     # Filter data based on selections
     filtered_df = df.copy()
@@ -68,6 +96,8 @@ try:
         filtered_df = filtered_df[filtered_df["Position"] == selected_position]
     if selected_week != "All":
         filtered_df = filtered_df[filtered_df["Week"] == selected_week]
+    else:
+        filtered_df = filtered_df[filtered_df["Week"] == "All"]
     
     # Create scatter plot with trendlines
     fig = go.Figure()
@@ -86,8 +116,8 @@ try:
         if len(pos_df) > 0:
             fig.add_trace(
                 go.Scatter(
-                    x=pos_df["Start_Pct"],
-                    y=pos_df["Score"],
+                    x=pos_df["Score"],
+                    y=pos_df["Start_Pct"],
                     mode="markers",
                     name=pos,
                     marker=dict(color=POSITION_COLORS[pos]),
@@ -101,9 +131,9 @@ try:
             
             # Add trendline
             if len(pos_df) > 1:
-                z = np.polyfit(pos_df["Start_Pct"], pos_df["Score"], 1)
+                z = np.polyfit(pos_df["Score"], pos_df["Start_Pct"], 1)
                 p = np.poly1d(z)
-                x_trend = np.linspace(pos_df["Start_Pct"].min(), pos_df["Start_Pct"].max(), 100)
+                x_trend = np.linspace(pos_df["Score"].min(), pos_df["Score"].max(), 100)
                 fig.add_trace(
                     go.Scatter(
                         x=x_trend,
@@ -114,16 +144,18 @@ try:
                             dash="dash",
                             color=POSITION_COLORS[pos]
                         ),
-                        showlegend=False
+                        showlegend=False,
+                        hoverinfo='skip'  # Disable hover tooltips for trendline
                     )
                 )
     
     # Update layout
+    title_suffix = " (Average among weeks available in contest)" if selected_week == "All" else f" (Week {selected_week})"
     fig.update_layout(
         height=600,
-        title="Player Start Percentage vs Score",
-        xaxis_title="Start Percentage (%)",
-        yaxis_title="Player Score",
+        title=f"Player Start Percentage vs Score{title_suffix}",
+        xaxis_title="Player Score",
+        yaxis_title="Start Percentage (%)",
         legend_title="Position",
         hovermode='closest'
     )
@@ -141,8 +173,10 @@ try:
             'Score': 'Score',
             'Start_Pct': 'Start Pct'
         }
+        # Create a copy of the dataframe for display
+        display_df = filtered_df[display_columns.keys()].copy()
         st.dataframe(
-            filtered_df[display_columns.keys()]
+            display_df
             .rename(columns=display_columns)
             .sort_values('Start Pct', ascending=False),
             use_container_width=True,
